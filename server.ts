@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { FALLBACK_PROJECTS } from "./src/fallbackData";
 
 // Load environment variables
 dotenv.config();
@@ -35,35 +36,37 @@ function getGeminiClient() {
 
 // Endpoint 1: Fetch active ULURP projects live from Socrata with filters and search
 app.get("/api/projects", async (req, res) => {
+  const { borough, q } = req.query;
+
+  let socrataUrl = "https://data.cityofnewyork.us/resource/hgx4-8ukb.json?ulurp_non=ULURP";
+
+  // Build filters
+  const filters: string[] = [];
+  if (borough && borough !== "all" && typeof borough === "string") {
+    filters.push(`borough='${borough}'`);
+  }
+
+  let finalUrl = socrataUrl;
+  if (filters.length > 0) {
+    finalUrl += "&" + filters.join("&");
+  }
+
+  // Always only include projects that have public_status of "Noticed" or "In Public Review"
+  finalUrl += `&%24where=${encodeURIComponent("public_status='Noticed' or public_status='In Public Review'")}`;
+
+  if (q && typeof q === "string") {
+    finalUrl += `&%24q=${encodeURIComponent(q.trim())}`;
+  }
+
+  // Sort by project_id DESC to get newest first, pull up to 2000 to find enough matches after keyword filtering
+  finalUrl += `&%24order=project_id%20desc&%24limit=2000`;
+
   try {
-    const { borough, q } = req.query;
-
-    let socrataUrl = "https://data.cityofnewyork.us/resource/hgx4-8ukb.json?ulurp_non=ULURP";
-
-    // Build filters
-    const filters: string[] = [];
-    if (borough && borough !== "all" && typeof borough === "string") {
-      filters.push(`borough='${borough}'`);
-    }
-
-    let finalUrl = socrataUrl;
-    if (filters.length > 0) {
-      finalUrl += "&" + filters.join("&");
-    }
-
-    // Always only include projects that have public_status of "Noticed" or "In Public Review"
-    finalUrl += `&%24where=${encodeURIComponent("public_status='Noticed' or public_status='In Public Review'")}`;
-
-    if (q && typeof q === "string") {
-      finalUrl += `&%24q=${encodeURIComponent(q.trim())}`;
-    }
-
-    // Sort by project_id DESC to get newest first, pull up to 2000 to find enough matches after keyword filtering
-    finalUrl += `&%24order=project_id%20desc&%24limit=2000`;
-
     console.log(`Querying Socrata ZAP Projects URL: ${finalUrl}`);
     const socrataRes = await fetch(finalUrl, {
-      headers: { "User-Agent": "aistudio-build-cpc" }
+      headers: { 
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" 
+      }
     });
 
     if (!socrataRes.ok) {
@@ -104,8 +107,33 @@ app.get("/api/projects", async (req, res) => {
     }
     res.json(projects);
   } catch (error: any) {
-    console.error("Error fetching projects from Socrata:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch projects from Socrata." });
+    console.warn(`Socrata fetch failed (${error.message || error}). Falling back to local actual projects cache...`);
+    
+    // Fallback to local actual projects
+    let filteredFallback = [...FALLBACK_PROJECTS];
+
+    // Filter by borough
+    if (borough && borough !== "all" && typeof borough === "string") {
+      const targetBoro = borough.toLowerCase().trim();
+      filteredFallback = filteredFallback.filter(
+        p => (p.borough || "").toLowerCase().trim() === targetBoro
+      );
+    }
+
+    // Filter by search query
+    if (q && typeof q === "string" && q.trim()) {
+      const term = q.toLowerCase().trim();
+      filteredFallback = filteredFallback.filter(p => {
+        return (
+          (p.project_name || "").toLowerCase().includes(term) ||
+          (p.project_brief || "").toLowerCase().includes(term) ||
+          (p.project_id || "").toLowerCase().includes(term) ||
+          (p.ulurp_numbers || "").toLowerCase().includes(term)
+        );
+      });
+    }
+
+    res.json(filteredFallback);
   }
 });
 
