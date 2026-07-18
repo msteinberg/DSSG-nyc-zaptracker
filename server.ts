@@ -1,9 +1,7 @@
 import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
 // Load environment variables
 dotenv.config();
@@ -114,6 +112,7 @@ app.get("/api/projects", async (req, res) => {
 // Helper to programmatically extract all ZAP project URLs from a PDF buffer using pdfjs-dist
 async function extractProjectUrlsFromPdf(buffer: Buffer): Promise<string[]> {
   try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer) });
     const pdf = await loadingTask.promise;
     const urls: string[] = [];
@@ -670,6 +669,7 @@ async function getCPCScheduledProjects(): Promise<ScheduledProjectsCache> {
   }
 
   // Parse PDF
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(targetBuffer) });
   const pdf = await loadingTask.promise;
   let allText = "";
@@ -755,6 +755,7 @@ app.get("/api/cpc-scheduled-projects", async (req, res) => {
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in DEVELOPMENT mode with Vite middleware...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
