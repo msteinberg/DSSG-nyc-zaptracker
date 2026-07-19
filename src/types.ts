@@ -49,6 +49,8 @@ export interface Project {
   ntaCode?: string;
   ntaName?: string;
   displacementRisks?: DisplacementRiskInfo[];
+  latitude?: string | null;
+  longitude?: string | null;
 }
 
 export interface TrackedProject extends Project {

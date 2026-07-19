@@ -18,13 +18,13 @@ If you do not wish to testify but would like to watch the meeting via livestream
 Via Phone
 Dial any of the following numbers
 877-853-5247 (US Toll-free)
-888-788-0099 (US Toll-free) 
-(253) 215-8782 (Toll number) 
-(213) 338-8477 (Toll number) 
+888-788-0099 (US Toll-free)
+(253) 215-8782 (Toll number)
+(213) 338-8477 (Toll number)
 
-If you wish to listen only, when prompted, enter: 
-Meeting ID: 880 8658 9511 
-Participant ID: Press pound (#) to skip 
+If you wish to listen only, when prompted, enter:
+Meeting ID: 880 8658 9511
+Participant ID: Press pound (#) to skip
 Passcode: 686997`;
 
 interface CalendarEventParams {

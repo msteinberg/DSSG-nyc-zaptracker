@@ -1,6 +1,6 @@
 {
   "name": "NYC CPC Hearing Tracker",
-  "description": "An AI-powered tool to parse NYC City Planning Commission (CPC) public hearing agendas, extract ZAP project IDs, and track scheduled hearings.",
+  "description": "A premium NYC DSSG-inspired portal that maps live Socrata land-use databases, tracks CPC scheduled hearings, and applies data science to civic planning.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

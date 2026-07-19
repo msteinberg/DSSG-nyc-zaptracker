@@ -422,12 +422,16 @@ async function resolveNtaForProject(projectId: string) {
       currentMilestone,
       currentMilestoneDate,
       publicStatus,
-      certifiedReferred
+      certifiedReferred,
+      latitude: null,
+      longitude: null
     };
   }
 
   const ntaCodesSet = new Set<string>();
   const ntaNamesSet = new Set<string>();
+  let resolvedLatitude: string | null = null;
+  let resolvedLongitude: string | null = null;
 
   // Process up to 5 BBLs (to avoid too many parallel network requests)
   for (const bbl of bbls.slice(0, 5)) {
@@ -448,6 +452,12 @@ async function resolveNtaForProject(projectId: string) {
         const data = await response.json();
         if (Array.isArray(data) && data.length > 0) {
           bct2020 = data[0].bct2020 || null;
+          if (data[0].latitude && !resolvedLatitude) {
+            resolvedLatitude = data[0].latitude;
+          }
+          if (data[0].longitude && !resolvedLongitude) {
+            resolvedLongitude = data[0].longitude;
+          }
         }
       }
 
@@ -464,6 +474,12 @@ async function resolveNtaForProject(projectId: string) {
           const fallbackData = await fallbackRes.json();
           if (Array.isArray(fallbackData) && fallbackData.length > 0) {
             bct2020 = fallbackData[0].bct2020 || null;
+            if (fallbackData[0].latitude && !resolvedLatitude) {
+              resolvedLatitude = fallbackData[0].latitude;
+            }
+            if (fallbackData[0].longitude && !resolvedLongitude) {
+              resolvedLongitude = fallbackData[0].longitude;
+            }
           }
         }
       }
@@ -503,7 +519,9 @@ async function resolveNtaForProject(projectId: string) {
     currentMilestone,
     currentMilestoneDate,
     publicStatus,
-    certifiedReferred
+    certifiedReferred,
+    latitude: resolvedLatitude,
+    longitude: resolvedLongitude
   };
 }
 
@@ -607,12 +625,25 @@ app.get("/api/resolve-project-nta", async (req, res) => {
   }
 });
 
+interface CPCSectionData {
+  date: string;
+  ulurps: string[];
+  projectIds: string[];
+}
+
 interface ScheduledProjectsCache {
   date: string;
   calendarUrl: string;
   ulurps: string[];
   projectIds: string[];
   lastFetched: number;
+  meetingDate: string;
+  schedulingDate: string;
+  sections: {
+    scheduling: CPCSectionData;
+    votes: CPCSectionData;
+    hearings: CPCSectionData;
+  };
 }
 let scheduledProjectsCache: ScheduledProjectsCache | null = null;
 const CALENDAR_CACHE_TTL = 60 * 60 * 1000; // 1 hour caching
@@ -700,8 +731,19 @@ async function getCPCScheduledProjects(): Promise<ScheduledProjectsCache> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(targetBuffer) });
   const pdf = await loadingTask.promise;
+  
   let allText = "";
-  const extractedProjectIds: string[] = [];
+  let currentSection: "unknown" | "scheduling" | "votes" | "hearings" = "unknown";
+  
+  const schedulingUlurps: string[] = [];
+  const schedulingProjectIds: string[] = [];
+  const votesUlurps: string[] = [];
+  const votesProjectIds: string[] = [];
+  const hearingsUlurps: string[] = [];
+  const hearingsProjectIds: string[] = [];
+
+  const allUlurps: string[] = [];
+  const allProjectIds: string[] = [];
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
@@ -709,55 +751,121 @@ async function getCPCScheduledProjects(): Promise<ScheduledProjectsCache> {
     const pageText = textObj.items.map((item: any) => item.str).join(" ");
     allText += pageText + "\n";
 
-    // Extract project IDs from hyperlink annotations
+    // Detect section transitions on this page
+    if (/II\.\s+Scheduling/i.test(pageText)) {
+      currentSection = "scheduling";
+    } else if (/III\.\s+(?:Commission\s+Votes|REPORTS)/i.test(pageText)) {
+      currentSection = "votes";
+    } else if (/IV\.\s+Public\s+Hearings/i.test(pageText)) {
+      currentSection = "hearings";
+    }
+
+    // Extract ULURPs on this page
+    const ulurpRegex = /\b([C|N|M|A|U|X|Y|K|Q|R|Z])\s*(\d{5,6})\s*([A-Z]{2,4})\b/gi;
+    const pageUlurps = (pageText.match(ulurpRegex) || []).map(u => u.replace(/\s+/g, "").toUpperCase());
+    allUlurps.push(...pageUlurps);
+
+    // Extract Project IDs from annotations on this page
+    const pageProjectIds: string[] = [];
     const annotations = await page.getAnnotations();
     for (const annot of annotations) {
       if (annot.subtype === "Link" && annot.url) {
         const urlStr = annot.url.trim();
         const projectMatch = urlStr.match(/zap\.planning\.nyc\.gov\/projects\/([A-Za-z0-9]+)/i);
         if (projectMatch) {
-          extractedProjectIds.push(projectMatch[1].toUpperCase());
+          pageProjectIds.push(projectMatch[1].toUpperCase());
         }
       }
     }
+
+    // Extract Project IDs from text on this page
+    const projectIdRegex = /\b(20\d{2}[A-Z]\d+)\b/gi;
+    const matchesProjectIdsText = (pageText.match(projectIdRegex) || []).map(p => p.toUpperCase());
+    pageProjectIds.push(...matchesProjectIdsText);
+    allProjectIds.push(...pageProjectIds);
+
+    // Route to the appropriate active section
+    if (currentSection === "scheduling") {
+      schedulingUlurps.push(...pageUlurps);
+      schedulingProjectIds.push(...pageProjectIds);
+    } else if (currentSection === "votes") {
+      votesUlurps.push(...pageUlurps);
+      votesProjectIds.push(...pageProjectIds);
+    } else if (currentSection === "hearings") {
+      hearingsUlurps.push(...pageUlurps);
+      hearingsProjectIds.push(...pageProjectIds);
+    }
   }
 
-  // Find meeting date
-  let scheduledDate = "";
-  const dateMatch = allText.match(/Scheduling projects for the public meeting of\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
-  if (dateMatch) {
-    scheduledDate = dateMatch[1].trim();
-  } else {
-    const fallbackMatch = allText.match(/Scheduling projects for\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
-    if (fallbackMatch) {
-      scheduledDate = fallbackMatch[1].trim();
+  // Parse meeting date (the date of the current calendar)
+  let meetingDate = "";
+  const match = targetUrl.match(/(\d{4})-(\d{2})-(\d{2})cal\.pdf/);
+  if (match) {
+    const yyyy = parseInt(match[1], 10);
+    const mm = parseInt(match[2], 10) - 1;
+    const dd = parseInt(match[3], 10);
+    const date = new Date(yyyy, mm, dd);
+    meetingDate = date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  }
+
+  if (!meetingDate) {
+    const coverPageMatch = allText.substring(0, 2500).match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i);
+    if (coverPageMatch) {
+      meetingDate = coverPageMatch[0].trim();
     } else {
-      const coverPageMatch = allText.substring(0, 2000).match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i);
-      if (coverPageMatch) {
-        scheduledDate = coverPageMatch[0].trim();
+      meetingDate = "the CPC meeting";
+    }
+  }
+
+  // Parse future scheduling date (when scheduled projects will be heard)
+  let schedulingDate = "";
+  const dateMatch = allText.match(/II\.\s+Scheduling\s+projects\s+for\s+the\s+public\s+meeting\s+of\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
+  if (dateMatch) {
+    schedulingDate = dateMatch[1].trim();
+  } else {
+    const fallbackMatch = allText.match(/Scheduling\s+projects\s+for\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i);
+    if (fallbackMatch) {
+      schedulingDate = fallbackMatch[1].trim();
+    } else {
+      try {
+        const d = new Date(meetingDate);
+        if (!isNaN(d.getTime())) {
+          const future = new Date(d.getTime() + 14 * 24 * 60 * 60 * 1000);
+          schedulingDate = future.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+        }
+      } catch {
+        schedulingDate = "the next CPC meeting";
       }
     }
   }
 
-  // Extract project IDs from text as well
-  const projectIdRegex = /\b(20\d{2}[A-Z]\d+)\b/gi;
-  const matchesProjectIds = allText.match(projectIdRegex) || [];
-  for (const pid of matchesProjectIds) {
-    extractedProjectIds.push(pid.toUpperCase());
-  }
-  const projectIds = Array.from(new Set(extractedProjectIds));
-
-  // Extract ULURP numbers from the entire PDF text (not just scheduling section) to capture hearings/reports
-  const ulurpRegex = /\b([C|N|M|A|U|X|Y|K|Q|R|Z])\s*(\d{5,6})\s*([A-Z]{2,4})\b/gi;
-  const matches = allText.match(ulurpRegex) || [];
-  const ulurps = Array.from(new Set(matches.map(m => m.replace(/\s+/g, "").toUpperCase())));
+  const unique = (arr: string[]) => Array.from(new Set(arr));
 
   scheduledProjectsCache = {
-    date: scheduledDate || "the next CPC meeting",
+    date: schedulingDate || "the next CPC meeting",
     calendarUrl: targetUrl,
-    ulurps,
-    projectIds,
-    lastFetched: now
+    ulurps: unique(allUlurps),
+    projectIds: unique(allProjectIds),
+    lastFetched: now,
+    meetingDate: meetingDate || "the CPC meeting",
+    schedulingDate: schedulingDate || "the next CPC meeting",
+    sections: {
+      scheduling: {
+        date: schedulingDate || "the next CPC meeting",
+        ulurps: unique(schedulingUlurps),
+        projectIds: unique(schedulingProjectIds)
+      },
+      votes: {
+        date: meetingDate || "the CPC meeting",
+        ulurps: unique(votesUlurps),
+        projectIds: unique(votesProjectIds)
+      },
+      hearings: {
+        date: meetingDate || "the CPC meeting",
+        ulurps: unique(hearingsUlurps),
+        projectIds: unique(hearingsProjectIds)
+      }
+    }
   };
 
   return scheduledProjectsCache;
@@ -771,7 +879,10 @@ app.get("/api/cpc-scheduled-projects", async (req, res) => {
       scheduledMeetingDate: result.date,
       calendarUrl: result.calendarUrl,
       scheduledUlurps: result.ulurps,
-      scheduledProjectIds: result.projectIds
+      scheduledProjectIds: result.projectIds,
+      meetingDate: result.meetingDate,
+      schedulingDate: result.schedulingDate,
+      sections: result.sections
     });
   } catch (error: any) {
     console.error("Error in cpc-scheduled-projects endpoint:", error);
